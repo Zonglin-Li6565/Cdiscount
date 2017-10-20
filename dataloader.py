@@ -5,12 +5,15 @@ This module contains data preprocessor and pipelined data feeder
 from __future__ import print_function
 
 import io
+import pickle
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 from skimage.data import imread
 import multiprocessing as mp
 import os.path
+import struct
+from bson.errors import InvalidBSON
 
 IMAGE_SHAPE = (180, 180, 3)
 NCORE = 8
@@ -35,41 +38,49 @@ _data_queue = tf.FIFOQueue(
     ))
 
 _threads = []
+_data_starts = None
 
-def _preprocess(bson_path, image_dir):
+def _preprocess(bson_path):
+    """
+    adapted from
+    https://github.com/mongodb/mongo-python-driver/blob/0b34f9702ca8bed45792a53287d33a2292b99152/bson/__init__.py#L855
 
-    def worker(queue, iolock):
+    Returns: a list of integers, specifies the start of each data point in the
+             file
+    """
+    data_starts = []
+    current_offset = 0
+    with open(bson_path, "rb") as f:
         while True:
-            d = q.get()
-            if d is None:
+            size_data = f.read(4)
+            data_starts.append(current_offset)
+            if len(size_data) is 0:
                 break
-            product_id = d["_id"]
-            category_id = d["category_id"]
-            product = [category_id]
-            for e, pic in enumerate(d["imgs"]):
-                picture = imread(io.BytesIO(pic["picture"]))
-                product.append(picture)
-            path = os.path.join(image_dir, str(product_id) + ".p")
-            with open(path, "wb") as f:
-                pickle.dump(product, f)
+            elif len(size_data) != 4:
+                raise InvalidBSON("cut off in middle of objsize")
+            size = struct.Struct("<i").unpack(size_data)[0]
+            f.seek(size - 4, os.SEEK_CUR)
+            current_offset += size
 
-    q = mp.Queue(maxsize=NCORE)
-    iolock = mp.Lock()
-    pool = mp.Pool(NCORE, initializer=worker, initargs=(q, iolock))
-    data = bson.decode_file_iter(open(bson_path, "rb"))
-    for c, d in enumerate(data):
-        q.put(d)
+    return data_starts
 
-def check_preprocess(bson_path, image_dir):
+def init(bson_path, cache_file):
     """
     initializes the package level variables
     performs preprocessing if needed
 
     Return: None
     """
-    pass
+    global _data_starts
+    if os.path.isfile(cache_file) is False:
+        _data_starts = _preprocess(bson_path)
+        with open(cache_file, "wb") as f:
+            pickle.dump(_data_starts, f)
+    else:
+        with open(cache_file, "rb") as f:
+            _data_starts = pickle.load(f)
 
-def _load_worker():
+def _load_worker(queue, iolock):
     pass
 
 def start(sess):
