@@ -13,19 +13,22 @@ from skimage.data import imread
 import multiprocessing as mp
 import os.path
 import struct
+import bson
 from bson.errors import InvalidBSON
 
 IMAGE_SHAPE = (180, 180, 3)
 NCORE = 8
 
-_img_dir = None
+_bson_path = None
 _sess = None
 _coord = tf.train.Coordinator()
-_id_queue = tf.RandomShuffleQueue(
+
+_file_offset_queue = tf.RandomShuffleQueue(
     10000,                                  # capacity
     0,                                      # min after dequeue
     dtypes=[tf.string],                     # only string
     shapes=[()])                            # 1d elements
+
 _data_queue = tf.FIFOQueue(
     500,                                    # capacity of 500
     dtypes=(
@@ -61,7 +64,7 @@ def _preprocess(bson_path):
             size = struct.Struct("<i").unpack(size_data)[0]
             f.seek(size - 4, os.SEEK_CUR)
             current_offset += size
-
+    _bson_path = bson_path
     return data_starts
 
 def init(bson_path, cache_file):
@@ -80,8 +83,18 @@ def init(bson_path, cache_file):
         with open(cache_file, "rb") as f:
             _data_starts = pickle.load(f)
 
-def _load_worker(queue, iolock):
-    pass
+def _load_worker(offset_dequeue, data_enqueue):
+    while _coord.should_stop() is False:
+        # dequeue one from offset queue
+        offset = _sess.run(offset_dequeue)
+        with open(_bson_path, "rb") as f:
+            f.seek(offset, os.SEEK_SET)
+            _, data = bson.decode_file_iter(f).next()
+            product_id = data["_id"]
+            category_id = data["category_id"]
+            for e, pic in enumerate(data["imgs"]):
+                picture = imread(io.BytesIO(pic["picture"]))
+                ## TODO: enqueue the image
 
 def start(sess):
     """
