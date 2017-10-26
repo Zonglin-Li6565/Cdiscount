@@ -42,6 +42,8 @@ _data_queue = tf.FIFOQueue(
 
 _threads = []
 _data_starts = None
+_img_holder = tf.placeholder(tf.float32)
+_category_holder = tf.placeholder(tf.int32)
 
 def _preprocess(bson_path):
     """
@@ -94,7 +96,16 @@ def _load_worker(offset_dequeue, data_enqueue):
             category_id = data["category_id"]
             for e, pic in enumerate(data["imgs"]):
                 picture = imread(io.BytesIO(pic["picture"]))
-                ## TODO: enqueue the image
+                try:
+                    _sess.run(
+                        data_enqueue,
+                        feed_dict={
+                            _img_holder: picture,
+                            _category_holder: category_id
+                        }
+                    )
+                except tf.errors.CancelledError:
+                    return
 
 def start(sess):
     """
@@ -117,3 +128,10 @@ def end():
     _sess.run(dq_stop)
     _coord.join(_threads)
 
+def dequeue_op(batch_size):
+    """
+    Returns the dequeue op
+
+    Return: the dequeue op. Will dequeue one (image, category)
+    """
+    return _data_queue.dequeue_many(batch_size)
