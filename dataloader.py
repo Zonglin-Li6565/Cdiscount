@@ -15,9 +15,9 @@ import os.path
 import struct
 import bson
 from bson.errors import InvalidBSON
+import threading
 
 IMAGE_SHAPE = (180, 180, 3)
-NCORE = 8
 
 _bson_path = None
 _sess = None
@@ -26,8 +26,9 @@ _coord = tf.train.Coordinator()
 _file_offset_queue = tf.RandomShuffleQueue(
     10000,                                  # capacity
     0,                                      # min after dequeue
-    dtypes=[tf.string],                     # only string
-    shapes=[()])                            # 1d elements
+    dtypes=[tf.int32],                     # only string
+    shapes=[()]                             # 1d elements
+)
 
 _data_queue = tf.FIFOQueue(
     500,                                    # capacity of 500
@@ -38,7 +39,8 @@ _data_queue = tf.FIFOQueue(
     shapes=(
         IMAGE_SHAPE,
         ()                                  # single integer
-    ))
+    )
+)
 
 _threads = []
 _data_starts = None
@@ -48,6 +50,8 @@ _category_holder = tf.placeholder(tf.int32)
 def _preprocess(bson_path):
     """
     adapted from
+    https://stackoverflow.com/questions/39279323/quickly-count-the-number-of-objects-in-bson-document
+    and
     https://github.com/mongodb/mongo-python-driver/blob/0b34f9702ca8bed45792a53287d33a2292b99152/bson/__init__.py#L855
 
     Returns: a list of integers, specifies the start of each data point in the
@@ -66,7 +70,6 @@ def _preprocess(bson_path):
             size = struct.Struct("<i").unpack(size_data)[0]
             f.seek(size - 4, os.SEEK_CUR)
             current_offset += size
-    _bson_path = bson_path
     return data_starts
 
 def init(bson_path, cache_file):
@@ -77,6 +80,8 @@ def init(bson_path, cache_file):
     Return: None
     """
     global _data_starts
+    global _bson_path
+    _bson_path = bson_path
     if os.path.isfile(cache_file) is False:
         _data_starts = _preprocess(bson_path)
         with open(cache_file, "wb") as f:
@@ -91,7 +96,7 @@ def _load_worker(offset_dequeue, data_enqueue):
         offset = _sess.run(offset_dequeue)
         with open(_bson_path, "rb") as f:
             f.seek(offset, os.SEEK_SET)
-            _, data = bson.decode_file_iter(f).next()
+            data = next(bson.decode_file_iter(f))
             product_id = data["_id"]
             category_id = data["category_id"]
             for e, pic in enumerate(data["imgs"]):
@@ -107,13 +112,41 @@ def _load_worker(offset_dequeue, data_enqueue):
                 except tf.errors.CancelledError:
                     return
 
-def start(sess):
+def start(sess, num_of_workers=8):
     """
     start the daemon of workers
 
     Return: None
     """
-    pass
+    global _threads
+    global _sess
+    if _data_starts is not None:
+        _sess = sess
+        offset_enqueue = _file_offset_queue.enqueue_many([_data_starts])
+        runner = tf.train.QueueRunner(_file_offset_queue, [offset_enqueue])
+        _threads += runner.create_threads(sess, coord=_coord, start=True)
+
+        offset_dequeue = _file_offset_queue.dequeue()
+        data_enqueue = _data_queue.enqueue([_img_holder, _category_holder])
+        for _ in range(num_of_workers):
+            thread = threading.Thread(
+                    target=_load_worker,
+                    args=(
+                    offset_dequeue,
+                    data_enqueue
+                )
+            )
+            #process = mp.Process(
+            #    target=_load_worker,
+            #    args=(
+            #        offset_dequeue,
+            #        data_enqueue
+            #    )
+            #)
+            thread.start()
+            _threads.append(thread)
+    else:
+        print("error on starting the processes")
 
 def end():
     """
