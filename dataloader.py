@@ -5,17 +5,15 @@ This module contains data preprocessor and pipelined data feeder
 from __future__ import print_function
 
 import io
-import pickle
-import numpy as np
-import pandas as pd
-import tensorflow as tf
-from skimage.data import imread
-import multiprocessing as mp
 import os.path
+import pickle
 import struct
-import bson
-from bson.errors import InvalidBSON
 import threading
+
+import bson
+import tensorflow as tf
+from bson.errors import InvalidBSON
+from skimage.data import imread
 
 IMAGE_SHAPE = (180, 180, 3)
 
@@ -47,6 +45,7 @@ _data_starts = None
 _img_holder = tf.placeholder(tf.float32)
 _category_holder = tf.placeholder(tf.int32)
 
+
 def _preprocess(bson_path):
     """
     adapted from
@@ -72,6 +71,7 @@ def _preprocess(bson_path):
             current_offset += size
     return data_starts
 
+
 def init(bson_path, cache_file):
     """
     initializes the package level variables
@@ -89,6 +89,7 @@ def init(bson_path, cache_file):
     else:
         with open(cache_file, "rb") as f:
             _data_starts = pickle.load(f)
+
 
 def _load_worker(offset_dequeue, data_enqueue):
     while _coord.should_stop() is False:
@@ -112,6 +113,7 @@ def _load_worker(offset_dequeue, data_enqueue):
                 except tf.errors.CancelledError:
                     return
 
+
 def start(sess, num_of_workers=8):
     """
     start the daemon of workers
@@ -130,23 +132,17 @@ def start(sess, num_of_workers=8):
         data_enqueue = _data_queue.enqueue([_img_holder, _category_holder])
         for _ in range(num_of_workers):
             thread = threading.Thread(
-                    target=_load_worker,
-                    args=(
+                target=_load_worker,
+                args=(
                     offset_dequeue,
                     data_enqueue
                 )
             )
-            #process = mp.Process(
-            #    target=_load_worker,
-            #    args=(
-            #        offset_dequeue,
-            #        data_enqueue
-            #    )
-            #)
             thread.start()
             _threads.append(thread)
     else:
         print("error on starting the processes")
+
 
 def end():
     """
@@ -160,6 +156,7 @@ def end():
     dq_stop = _data_queue.close(cancel_pending_enqueues=True)
     _sess.run(dq_stop)
     _coord.join(_threads)
+
 
 def dequeue_op(batch_size):
     """
